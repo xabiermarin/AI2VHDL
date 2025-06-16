@@ -28,6 +28,8 @@ END CNN_Row_Expander;
 
 ARCHITECTURE BEHAVIORAL OF CNN_Row_Expander IS
 
+attribute ramstyle : string;
+
     --RAM to buffer last row
     type RAM_T is array (0 to Input_Columns*Input_Cycles-1) of STD_LOGIC_VECTOR((CNN_Value_Resolution+CNN_Value_Negative)*(Input_Values/Input_Cycles)-1 downto 0);
     SIGNAL Buffer_RAM    : RAM_T;
@@ -39,6 +41,8 @@ ARCHITECTURE BEHAVIORAL OF CNN_Row_Expander IS
     SIGNAL Delay_Cnt     : NATURAL range 0 to Output_Cycles-1 := 0;
     SIGNAL Reset_Col     : STD_LOGIC := '0';
     SIGNAL oStream_Reg   : CNN_Stream_T;
+	 
+	--attribute ramstyle of BEHAVIORAL : architecture is "MLAB, no_rw_check";
     
 BEGIN
     oStream.Data_CLK <= iStream.Data_CLK;

@@ -26,6 +26,8 @@ ENTITY CNN_Pooling_Efficient IS
 END CNN_Pooling_Efficient;
 
 ARCHITECTURE BEHAVIORAL OF CNN_Pooling_Efficient IS
+
+attribute ramstyle : string;
     
     CONSTANT Calc_Steps   : NATURAL := Input_Values/Input_Cycles;    --Values to calculate at once for each pixel in pooling matrix
 
@@ -48,7 +50,7 @@ ARCHITECTURE BEHAVIORAL OF CNN_Pooling_Efficient IS
     CONSTANT OUT_RAM_Elements : NATURAL := Input_Cycles;
     type OUT_set_t is array (0 to Input_Values/OUT_RAM_Elements-1) of SIGNED(CNN_Value_Resolution downto 0);
     type OUT_ram_t is array (natural range <>) of OUT_set_t;
-    SIGNAL OUT_RAM      : OUT_ram_t(0 to OUT_RAM_Elements-1) := (others => (others => (others => '0')));
+    SIGNAL OUT_RAM      : OUT_ram_t(0 to OUT_RAM_Elements-1);
     SIGNAL OUT_Rd_Addr  : NATURAL range 0 to OUT_RAM_Elements-1;
     SIGNAL OUT_Rd_Data  : OUT_set_t;
     SIGNAL OUT_Wr_Addr  : NATURAL range 0 to OUT_RAM_Elements-1;
@@ -58,6 +60,8 @@ ARCHITECTURE BEHAVIORAL OF CNN_Pooling_Efficient IS
     --Signals to output data with delay
     SIGNAL Out_Value_Cnt_Reg  : NATURAL range 0 to Input_Cycles-1;
     SIGNAL Out_Delay_Cnt      : NATURAL range 0 to Filter_Delay-1 := Filter_Delay-1;
+	 
+--attribute ramstyle of BEHAVIORAL : architecture is "MLAB, no_rw_check";
     
 BEGIN
     
