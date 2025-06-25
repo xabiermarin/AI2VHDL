@@ -122,6 +122,7 @@ SIGNAL OUT_Wr_Data  : OUT_set_t;
 SIGNAL OUT_Wr_Ena   : STD_LOGIC := '1';
 
 SIGNAL Calc_En           : BOOLEAN := false;  --True while neural net is calculated
+SIGNAL Calc_En_Sum       : BOOLEAN := false;  --True while sum part of neural net is calculated
 SIGNAL Output_Bias_Reg   : NATURAL range 0 to Calc_Cycles := 0; --Current output for the bias calculation
 SIGNAL Add_Bias          : BOOLEAN := false;  --True if sum is calculated and bias can be added
 SIGNAL Last_Input        : STD_LOGIC;         --True if the calculation is done and the output can be sent to next layer
@@ -129,6 +130,14 @@ SIGNAL iData_Reg         : CNN_Values_T(Inputs/Input_Cycles-1 downto 0);
 SIGNAL Out_Cycle_Cnt_Reg : NATURAL range 0 to Output_Cycles-1 := Output_Cycles-1;  --Current Output that is one cycle delayed, so the output value can be read from RAM
 SIGNAL Out_Delay_Cnt     : NATURAL range 0 to Output_Delay-1 := Output_Delay-1;    --Counter to delay the output values that are sent one after another
 SIGNAL Out_Ready         : STD_LOGIC;         --True if the output data can be read from the RAM
+
+CONSTANT Group_Sum_Results    : NATURAL := integer(ceil(real(Calc_Steps)/real(CNN_Mult_Sum_Group)));
+CONSTANT Real_Group_Sum_Size  : NATURAL := Calc_Steps/Group_Sum_Results;
+CONSTANT Group_Sum_Bits       : NATURAL := integer(ceil(log2(real(Real_Group_Sum_Size)))); -- Additional Bits to calculate sum of first values in group
+CONSTANT Group_Sum_Total_Bits : NATURAL := Bool_Select(CNN_Shift_Before_Sum, bits_max+1, CNN_Value_Resolution+CNN_Weight_Resolution)+Group_Sum_Bits;
+type prod_array_t is array (0 to Calc_Outputs-1, 0 to Group_Sum_Results-1) of SIGNED(Group_Sum_Total_Bits-1 downto 0);
+signal Prod_Buf   : prod_array_t := (others => (others => (others =>'0')));
+SIGNAL SUM_Rd_Addr_Reg  : NATURAL range 0 to Calc_Cycles-1; -- Delay Addresses by one cycle to have sum in separate cycle
 
 BEGIN
     oStream.Data_CLK <= iStream.Data_CLK;
@@ -172,10 +181,12 @@ BEGIN
     
     PROCESS (iStream)
     --Keep track of current calculations of the convolution matrix
-    VARIABLE Cycle_Reg   : NATURAL range 0 to Input_Cycles-1;                  --Counter for the current input value calculation
-    VARIABLE Output_Cnt  : NATURAL range 0 to Calc_Cycles := 0;                --Counter for the current output to calculate
-    VARIABLE Element_Cnt : NATURAL range 0 to Calc_Cycles*Input_Cycles-1 := 0; --Counter for current calculation step overall
-    VARIABLE Element_Reg : NATURAL range 0 to Calc_Cycles*Input_Cycles-1 := 0;
+    VARIABLE Cycle_Reg     : NATURAL range 0 to Input_Cycles-1;                  --Counter for the current input value calculation
+    VARIABLE Cycle_Reg_2   : NATURAL range 0 to Input_Cycles-1;
+    VARIABLE Output_Cnt    : NATURAL range 0 to Calc_Cycles := 0;                --Counter for the current output to calculate
+    VARIABLE Output_Cnt_2  : NATURAL range 0 to Calc_Cycles := 0;
+    VARIABLE Element_Cnt   : NATURAL range 0 to Calc_Cycles*Input_Cycles-1 := 0; --Counter for current calculation step overall
+    VARIABLE Element_Reg   : NATURAL range 0 to Calc_Cycles*Input_Cycles-1 := 0;
     
     VARIABLE Weights_Buf : CNN_Weights_T(0 to Calc_Outputs-1, 0 to Calc_Steps-1);
     
@@ -192,8 +203,14 @@ BEGIN
     --Current sum for calculation (part of the sum RAM)
     VARIABLE sum : sum_set_t := (others => (others => '0'));
     VARIABLE Sum_Reg    : sum_set_t := (others => (others => '0'));
+    
+    VARIABLE Group_Sum_Counter  : NATURAL range 0 to Real_Group_Sum_Size := 0;
+    VARIABLE Prod_Sum_Cntr      : NATURAL range 0 to Group_Sum_Results := 0;
+    VARIABLE Prod_Sum_Buf       : SIGNED(Group_Sum_Total_Bits-1 downto 0);
     BEGIN
         IF (rising_edge(iStream.Data_CLK)) THEN
+            Calc_En_Sum <= Calc_En;
+            
             Last_Input <= '0';
             Add_Bias   <= false;
             
@@ -262,32 +279,36 @@ BEGIN
             END IF;
             
             --Calculate the neural net
-            IF (Calc_En) THEN
+            IF (Calc_En_Sum) THEN
                 --Read last sum from RAM if the calculation for the output is split
                 IF (Calc_Cycles > 1) THEN
                     sum := SUM_Rd_Data;
                 END IF;
                 
                 --Set sum to 0 for first calculation
-                IF (Cycle_Reg = 0) THEN
+                IF (Cycle_Reg_2 = 0) THEN
                     sum := (others => (others => '0'));
                 END IF;
                 
                 --Calculate the output values
                 FOR o in 0 to Calc_Outputs-1 LOOP
-                    FOR i in 0 to Inputs/Input_Cycles-1 LOOP
-                        IF CNN_Rounding(0) = '1' THEN
-                            sum(o) := resize(sum(o) + resize(shift_with_rounding(to_signed(iData_Reg(i) * Weights_Buf(o, i), CNN_Value_Resolution+CNN_Weight_Resolution), CNN_Weight_Resolution-Offset-1-CNN_Sum_Offset),bits_max+1),bits_max+1);
-                        else
-                            sum(o) := resize(sum(o) + resize(shift_bits(to_signed(iData_Reg(i) * Weights_Buf(o, i), CNN_Value_Resolution+CNN_Weight_Resolution), CNN_Weight_Resolution-Offset-1-CNN_Sum_Offset),bits_max+1),bits_max+1);
+                    FOR i in 0 to Group_Sum_Results-1 LOOP
+                        IF CNN_Shift_Before_Sum THEN
+                            sum(o) := resize(sum(o) + Prod_Buf(o, i), bits_max+1);
+                        ELSE
+                            IF CNN_Rounding(0) = '1' THEN
+                                sum(o) := resize(sum(o) + resize(shift_with_rounding(Prod_Buf(o, i), CNN_Weight_Resolution-Offset-1-CNN_Sum_Offset),bits_max+1),bits_max+1);
+                            ELSE
+                                sum(o) := resize(sum(o) + resize(shift_bits(Prod_Buf(o, i), CNN_Weight_Resolution-Offset-1-CNN_Sum_Offset),bits_max+1),bits_max+1);
+                            END IF;
                         END IF;
                     END LOOP;
                 END LOOP;
                 
                  --If this is the last data, add the bias
-                IF (Cycle_Reg = Input_Cycles-1) THEN
+                IF (Cycle_Reg_2 = Input_Cycles-1) THEN
                     --Send output data after all steps of the neural net are done
-                    IF (Output_Cnt = Calc_Cycles-1) THEN
+                    IF (Output_Cnt_2 = Calc_Cycles-1) THEN
                         Last_Input <= '1';
                     END IF;
                     --For o in 0 to Calc_Outputs-1 LOOP
@@ -303,8 +324,47 @@ BEGIN
                 END IF;
                 
                 --Save current output to add the bias
-                Output_Bias_Reg  <= Output_Cnt;
+                Output_Bias_Reg  <= Output_Cnt_2;
             END IF;
+            
+            --Calculate the neural net
+            IF (Calc_En) THEN
+                
+                --Calculate the output values
+                FOR o in 0 to Calc_Outputs-1 LOOP
+                    Group_Sum_Counter := 0;
+                    Prod_Sum_Cntr     := 0;
+                    Prod_Sum_Buf := (others => '0');
+                    FOR i in 0 to Calc_Steps-1 LOOP
+                        IF CNN_Shift_Before_Sum THEN
+                            IF CNN_Rounding(0) = '1' THEN
+                                Prod_Sum_Buf := Prod_Sum_Buf + resize(shift_with_rounding(to_signed(iData_Reg(i) * Weights_Buf(o, i), CNN_Value_Resolution+CNN_Weight_Resolution), CNN_Weight_Resolution-Offset-1-CNN_Sum_Offset),bits_max+1);
+                            ELSE
+                                Prod_Sum_Buf := Prod_Sum_Buf + resize(shift_bits(to_signed(iData_Reg(i) * Weights_Buf(o, i), CNN_Value_Resolution+CNN_Weight_Resolution), CNN_Weight_Resolution-Offset-1-CNN_Sum_Offset),bits_max+1);
+                            END IF;
+                        ELSE
+                            Prod_Sum_Buf := Prod_Sum_Buf + to_signed(iData_Reg(i) * Weights_Buf(o, i), CNN_Value_Resolution+CNN_Weight_Resolution);
+                        END IF;
+                        
+                        IF i = Calc_Steps-1 THEN
+                            Prod_Buf(o, Prod_Sum_Cntr) <= Prod_Sum_Buf;
+                        ELSIF Group_Sum_Counter < Real_Group_Sum_Size-1 THEN
+                            Group_Sum_Counter := Group_Sum_Counter + 1;
+                        else
+                            Group_Sum_Counter := 0;
+                            
+                            Prod_Buf(o, Prod_Sum_Cntr) <= Prod_Sum_Buf;
+                            Prod_Sum_Buf := (others => '0');
+                            
+                            Prod_Sum_Cntr := Prod_Sum_Cntr + 1;
+                        END IF;
+                    END LOOP;
+                END LOOP;
+                
+            END IF;
+            
+            Cycle_Reg_2 := Cycle_Reg;
+            Output_Cnt_2 := Output_Cnt;
             
             --Keep track of the current calculation step while new data for calculation is available
             IF (iStream.Data_Valid = '1') THEN
@@ -330,7 +390,8 @@ BEGIN
                 
             --Load last sum for this filter from the RAM
                 SUM_Wr_Addr <= SUM_Rd_Addr;
-                SUM_Rd_Addr <= Output_Cnt;
+                SUM_Rd_Addr <= SUM_Rd_Addr_Reg;
+                SUM_Rd_Addr_Reg <= Output_Cnt;
                 
             --Load Weights from ROM for this output and step of the calculation
                 IF (iStream.Data_Valid = '1' OR Calc_En) THEN
