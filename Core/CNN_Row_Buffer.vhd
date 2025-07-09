@@ -85,6 +85,8 @@ SIGNAL Row_Calc_Buf       : INTEGER range (-1)*(Filter_Rows)/2 to RAM_Rows+(Filt
 SIGNAL Column_Calc_Buf    : INTEGER range (-1)*(Filter_Columns)/2 to Input_Columns+(Filter_Columns-1)/2-1 := 0;
 SIGNAL Value_Calc_Buf     : NATURAL range 0 to Value_Cycles-1 := 0;
 
+CONSTANT Strides_Offset   : NATURAL := Bool_Select(Padding = same and Strides > 1, 1, 0);
+
 --attribute ramstyle of BEHAVIORAL : architecture is "MLAB, no_rw_check";
 
 BEGIN
@@ -262,7 +264,7 @@ BEGIN
                 IF (Valid_Reg = '1'
                     AND Out_Column_Center >= Filter_Columns/2 AND Out_Column_Center < Input_Columns-(Filter_Columns-1)/2
                     AND Out_Row_Center >= Filter_Rows/2 AND Out_Row_Center < Input_Rows-(Filter_Rows-1)/2
-                    AND (Out_Column_Center - Filter_Columns/2) MOD Strides = 0 AND (Out_Row_Center - Filter_Rows/2) MOD Strides = 0) THEN
+                    AND (Out_Column_Center - Filter_Columns/2) MOD Strides = Strides_Offset AND (Out_Row_Center - Filter_Rows/2) MOD Strides = Strides_Offset) THEN
                     oStream_Reg.Data_Valid <= '1';
                 ELSE
                     oStream_Reg.Data_Valid <= '0';
@@ -289,7 +291,7 @@ BEGIN
                 END IF;
             ELSE                    --Add zero padding
                 --skip rows and columns depending on the strides
-                IF (Valid_Reg = '1' AND Out_Column_Center MOD Strides = 0 AND Out_Row_Center MOD Strides = 0) THEN
+                IF (Valid_Reg = '1' AND Out_Column_Center MOD Strides = Strides_Offset AND Out_Row_Center MOD Strides = Strides_Offset) THEN
                     oStream_Reg.Data_Valid <= '1';
                 ELSE
                     oStream_Reg.Data_Valid <= '0';
