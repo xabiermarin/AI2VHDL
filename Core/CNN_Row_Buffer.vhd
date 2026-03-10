@@ -50,7 +50,7 @@ END FUNCTION;
 
 --RAM dimensions
 CONSTANT RAM_Rows  : NATURAL := RAM_Rows_F(Filter_Rows, Input_Columns);
-CONSTANT RAM_Bits  : NATURAL := (CNN_Value_Resolution+CNN_Value_Negative)*(Input_Values/Value_Cycles);
+CONSTANT RAM_Bits  : NATURAL := (CNN_Value_Resolution+CNN_Value_Negative-1)*(Input_Values/Value_Cycles);
 CONSTANT RAM_Width : NATURAL := Input_Columns*RAM_Rows*Value_Cycles;
 
 --RAM to save last rows
@@ -111,6 +111,7 @@ BEGIN
     
     --Variables to set the RAM input data and address
     VARIABLE RAM_In_Addr_Offset    : NATURAL range 0 to Value_Cycles-1 := 0;
+    VARIABLE RAM_In_Addr_Offset_Reg : NATURAL range 0 to Value_Cycles-1 := 0;
     VARIABLE RAM_In_Data_Part      : NATURAL range 0 to Input_Values-1 := 0;
     
     --Variable to detect changing input values
@@ -137,6 +138,8 @@ BEGIN
                     RAM_In_Row := 0;
                 END IF;
             END IF;
+
+            RAM_In_Addr_Offset_Reg := RAM_In_Addr_Offset;
             
             --RAM Input address has to be calculated differently dependant on Value_Cycles and Input_Cycles
             IF (Input_Cycles = 1) THEN
@@ -171,22 +174,26 @@ BEGIN
             IF (Input_Cycles = Value_Cycles) THEN
                 --Same values at a time come in as values that are sent out
                 FOR i in 0 to Input_Values/Input_Cycles-1 LOOP
-                    RAM_Data_In((i+1)*(CNN_Value_Resolution+CNN_Value_Negative)-1 downto i*(CNN_Value_Resolution+CNN_Value_Negative)) <= STD_LOGIC_VECTOR(TO_UNSIGNED(iData(i), (CNN_Value_Resolution+CNN_Value_Negative)));
+                    RAM_Data_In((i+1)*(CNN_Value_Resolution+CNN_Value_Negative-1)-1 downto i*(CNN_Value_Resolution+CNN_Value_Negative-1)) <= STD_LOGIC_VECTOR(TO_UNSIGNED(iData(i), (CNN_Value_Resolution+CNN_Value_Negative-1)));
                 END LOOP;
             ELSIF (Input_Cycles < Value_Cycles) THEN
                 --More values at a time come in as values that are sent out
                 FOR i in 0 to Input_Values/Value_Cycles-1 LOOP
-                    RAM_Data_In((i+1)*(CNN_Value_Resolution+CNN_Value_Negative)-1 downto i*(CNN_Value_Resolution+CNN_Value_Negative)) <= STD_LOGIC_VECTOR(TO_UNSIGNED(iData(i+RAM_In_Data_Part*(Input_Values/Value_Cycles)), (CNN_Value_Resolution+CNN_Value_Negative)));
+                    RAM_Data_In((i+1)*(CNN_Value_Resolution+CNN_Value_Negative-1)-1 downto i*(CNN_Value_Resolution+CNN_Value_Negative-1)) <= STD_LOGIC_VECTOR(TO_UNSIGNED(iData(i+RAM_In_Data_Part*(Input_Values/Value_Cycles)), (CNN_Value_Resolution+CNN_Value_Negative-1)));
                 END LOOP;
             ELSE
                 --Less values at a time come in as values that are sent out
                 FOR i in 0 to Input_Values/Input_Cycles-1 LOOP
-                    RAM_Data_In((i+1+RAM_In_Data_Part*(Input_Values/Input_Cycles))*(CNN_Value_Resolution+CNN_Value_Negative)-1 downto (i+RAM_In_Data_Part*(Input_Values/Input_Cycles))*(CNN_Value_Resolution+CNN_Value_Negative)) <= STD_LOGIC_VECTOR(TO_UNSIGNED(iData(i), (CNN_Value_Resolution+CNN_Value_Negative)));
+                    RAM_Data_In((i+1+RAM_In_Data_Part*(Input_Values/Input_Cycles))*(CNN_Value_Resolution+CNN_Value_Negative-1)-1 downto (i+RAM_In_Data_Part*(Input_Values/Input_Cycles))*(CNN_Value_Resolution+CNN_Value_Negative-1)) <= STD_LOGIC_VECTOR(TO_UNSIGNED(iData(i), (CNN_Value_Resolution+CNN_Value_Negative-1)));
                 END LOOP;
             END IF;
             
             --Write to RAM if there is new input data
-            RAM_Enable <= iStream.Data_Valid;
+            if iStream.Data_Valid = '1' or RAM_In_Addr_Offset_Reg /= RAM_In_Addr_Offset then
+                RAM_Enable <= '1';
+            ELSE
+                RAM_Enable <= '0';
+            end if;
             
             --Calculate output row and column center (current row and column - (Filter Size-1)/2)
             IF (Input_Columns > 1) THEN
@@ -282,10 +289,6 @@ BEGIN
                     oColumn_Buf            <= oColumn_Reg;
                     oInput_Buf             <= oInput_Reg;
                     
---                    --Set the output data with the data from the RAM
---                    FOR i in 0 to Input_Values/Value_Cycles-1 LOOP
---                        oData(i) <= TO_INTEGER(UNSIGNED(RAM_Data_Out((i+1)*(CNN_Value_Resolution+CNN_Value_Negative)-1 downto i*(CNN_Value_Resolution+CNN_Value_Negative))));
---                    END LOOP;
                 ELSE
                     oStream_Buf.Data_Valid <= '0';
                 END IF;
@@ -308,18 +311,10 @@ BEGIN
                     oColumn_Buf            <= oColumn_Reg;
                     oInput_Buf             <= oInput_Reg;
                     
---                    --Set the output data with the data from the RAM
---                    FOR i in 0 to Input_Values/Value_Cycles-1 LOOP
---                        oData(i) <= TO_INTEGER(UNSIGNED(RAM_Data_Out((i+1)*(CNN_Value_Resolution+CNN_Value_Negative)-1 downto i*(CNN_Value_Resolution+CNN_Value_Negative))));
---                    END LOOP;
                 ELSE
                     oStream_Buf.Data_Valid <= '0';
                 END IF;
                 
---                --Add padding data
---                IF (oData_En_Reg = '0') THEN
---                    oData <= (others => 0);
---                END IF;
             END IF;
             
             iStream_Row_Reg     := iStream.Row;
@@ -337,7 +332,7 @@ BEGIN
             
             IF oStream_Buf.Data_Valid = '1' THEN
                 FOR i in 0 to Input_Values/Value_Cycles-1 LOOP
-                    oData(i) <= TO_INTEGER(UNSIGNED(RAM_Data_Out((i+1)*(CNN_Value_Resolution+CNN_Value_Negative)-1 downto i*(CNN_Value_Resolution+CNN_Value_Negative))));
+                    oData(i) <= TO_INTEGER(UNSIGNED(RAM_Data_Out((i+1)*(CNN_Value_Resolution+CNN_Value_Negative-1)-1 downto i*(CNN_Value_Resolution+CNN_Value_Negative-1))));
                 END LOOP;
             END IF;
             
