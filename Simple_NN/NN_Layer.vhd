@@ -12,17 +12,17 @@ use work.CNN_Data_Package.all;
 
 ENTITY NN_Layer IS
     GENERIC (
-        Inputs          : NATURAL := 16;
-        Outputs         : NATURAL := 8;
-        Activation      : Activation_T := relu; --Activation after dot product
-        Input_Cycles    : NATURAL := 1;  --In deeper layers, the clock is faster than the new data. So the operation can be done in seperate cycles. Has to be divisor of inputs
-        Calc_Cycles     : NATURAL := 1;  --Second priority after Cycle_Reg Cycles to make use of more cycles for calculation
-        Output_Cycles   : NATURAL := 1;  --Output data in multiple cycles, so the next dense layer can calculate the neuron in multiple cycles
-        Output_Delay    : NATURAL := 1;  --Cycles between Output Values
-        Offset_In       : INTEGER := 0;  --Offset of Cycle_Reg Values
-        Offset_Out      : INTEGER := 0;  --Offset of Output Values
-        Offset          : INTEGER := 0;
-        Weights         : CNN_Weights_T
+        Inputs          : NATURAL := 16; -- Number of inputs
+        Outputs         : NATURAL := 8;  -- Number of outpus
+        Activation      : Activation_T := relu; -- Activation function
+        Input_Cycles    : NATURAL := 1;  -- In deeper layers, the clock is faster than the new data. So the operation can be done in seperate cycles. Has to be divisor of inputs
+        Calc_Cycles     : NATURAL := 1;  -- Second priority after Cycle_Reg Cycles to make use of more cycles for calculation
+        Output_Cycles   : NATURAL := 1;  -- Output data in multiple cycles, so the next dense layer can calculate the neuron in multiple cycles
+        Output_Delay    : NATURAL := 1;  -- Cycles between Output Values
+        Offset_In       : INTEGER := 0;  -- Offset of Cycle_Reg Values
+        Offset_Out      : INTEGER := 0;  -- Offset of Output Values
+        Offset          : INTEGER := 0; 
+        Weights         : CNN_Weights_T  -- Weight matrix (stored in CNN_Data_Package)
     );
     PORT (
         iStream : IN  CNN_Stream_T;
@@ -311,7 +311,7 @@ BEGIN
                     END LOOP;
                 END LOOP;
                 
-                 --If this is the last data, add the bias
+                --If this is the last data, add the bias
                 IF (Cycle_Reg_2 = Input_Cycles-1) THEN
                     --For o in 0 to Calc_Outputs-1 LOOP
                     --    Sum_Reg(o)  := shift_with_rounding(sum(o), CNN_Sum_Offset);
@@ -352,7 +352,7 @@ BEGIN
                             Prod_Buf(o, Prod_Sum_Cntr) <= Prod_Sum_Buf;
                         ELSIF Group_Sum_Counter < Real_Group_Sum_Size-1 THEN
                             Group_Sum_Counter := Group_Sum_Counter + 1;
-                        else
+                        ELSE
                             Group_Sum_Counter := 0;
                             
                             Prod_Buf(o, Prod_Sum_Cntr) <= Prod_Sum_Buf;
@@ -379,67 +379,65 @@ BEGIN
                 --Count through all calculation steps
                 IF (iCycle = 0) THEN
                     Element_Cnt := 0;
-                    ELSIF(element_cnt < Calc_Cycles*Input_Cycles-1) THEN
-                        Element_Cnt := Element_Cnt + 1;
-                    END IF;
-                ELSIF (Output_Cnt < Calc_Cycles-1 and element_cnt < Calc_Cycles*Input_Cycles-1) THEN
-                --Count through output values that are calculated
-                    Output_Cnt  := Output_Cnt + 1;
+                ELSIF(element_cnt < Calc_Cycles*Input_Cycles-1) THEN
                     Element_Cnt := Element_Cnt + 1;
-                ELSE
-                    Calc_En    <= false;
                 END IF;
+            ELSIF (Output_Cnt < Calc_Cycles-1 and element_cnt < Calc_Cycles*Input_Cycles-1) THEN
+            --Count through output values that are calculated
+                Output_Cnt  := Output_Cnt + 1;
+                Element_Cnt := Element_Cnt + 1;
+            ELSE
+                Calc_En    <= false;
+            END IF;
                 
             --Load last sum for this filter from the RAM
-                SUM_Wr_Addr <= SUM_Rd_Addr;
-                SUM_Rd_Addr <= SUM_Rd_Addr_Reg;
-                SUM_Rd_Addr_Reg <= Output_Cnt;
+            SUM_Wr_Addr <= SUM_Rd_Addr;
+            SUM_Rd_Addr <= SUM_Rd_Addr_Reg;
+            SUM_Rd_Addr_Reg <= Output_Cnt;
                 
             --Load Weights from ROM for this output and step of the calculation
-                IF (iStream.Data_Valid = '1' OR Calc_En) THEN
-                    IF (Element_Cnt < Calc_Cycles*Input_Cycles-1) THEN
-                        ROM_Addr <= Element_Cnt + 1;
-                    ELSE
-                        ROM_Addr <= 0;
-                    END IF;
+            IF (iStream.Data_Valid = '1' OR Calc_En) THEN
+                IF (Element_Cnt < Calc_Cycles*Input_Cycles-1) THEN
+                    ROM_Addr <= Element_Cnt + 1;
+                ELSE
+                    ROM_Addr <= 0;
                 END IF;
+            END IF;
 
-                Out_Ready <= '0';
+            Out_Ready <= '0';
                 
-             --Count through results of this neural network
-                IF (Last_Input = '1') THEN
-                    Out_Cycle_Cnt := 0;
-                    Out_Delay_Cnt <= 0;
-                    Out_Ready     <= '1';
-                ELSIF (Out_Delay_Cnt < Output_Delay-1) THEN      --Add a delay between the output data
-                    Out_Delay_Cnt <= Out_Delay_Cnt + 1;
-                ELSIF (Out_Cycle_Cnt_Reg < Output_Cycles-1) THEN --Count through Filters for the output
-                    Out_Delay_Cnt <= 0;
-                    Out_Cycle_Cnt := Out_Cycle_Cnt_Reg + 1;
-                    Out_Ready     <= '1';
-                END IF;
+            --Count through results of this neural network
+            IF (Last_Input = '1') THEN
+                Out_Cycle_Cnt := 0;
+                Out_Delay_Cnt <= 0;
+                Out_Ready     <= '1';
+            ELSIF (Out_Delay_Cnt < Output_Delay-1) THEN      --Add a delay between the output data
+                Out_Delay_Cnt <= Out_Delay_Cnt + 1;
+            ELSIF (Out_Cycle_Cnt_Reg < Output_Cycles-1) THEN --Count through Filters for the output
+                Out_Delay_Cnt <= 0;
+                Out_Cycle_Cnt := Out_Cycle_Cnt_Reg + 1;
+                Out_Ready     <= '1';
+            END IF;
                 
             --Read output value from RAM
-                Out_Cycle_Cnt_Reg  <= Out_Cycle_Cnt;
-                OUT_Rd_Addr        <= Out_Cycle_Cnt / (Output_Cycles/OUT_RAM_Elements);
+            Out_Cycle_Cnt_Reg  <= Out_Cycle_Cnt;
+            OUT_Rd_Addr        <= Out_Cycle_Cnt / (Output_Cycles/OUT_RAM_Elements);
                 
             --If the output is calculated, read from RAM and set oStream
-                IF (Out_Delay_Cnt = 0) THEN
-                    FOR i in 0 to Out_Values-1 LOOP
-                        IF (Output_Cycles = OUT_RAM_Elements) THEN
-                            oData(i) <= to_integer(OUT_Rd_Data(i));
-                        ELSE
-                            oData(i) <= to_integer(OUT_Rd_Data(i+(Out_Cycle_Cnt_Reg mod (Output_Cycles/OUT_RAM_Elements))*Out_Values));
-                        END IF;
-                    END LOOP;
-                    
-                    oCycle             <= Out_Cycle_Cnt_Reg;
-                    oStream.Data_Valid <= Out_Ready;
-                ELSE
-                    oStream.Data_Valid <= '0';
-                END IF;
+            IF (Out_Delay_Cnt = 0) THEN
+                FOR i in 0 to Out_Values-1 LOOP
+                    IF (Output_Cycles = OUT_RAM_Elements) THEN
+                        oData(i) <= to_integer(OUT_Rd_Data(i));
+                    ELSE
+                        oData(i) <= to_integer(OUT_Rd_Data(i+(Out_Cycle_Cnt_Reg mod (Output_Cycles/OUT_RAM_Elements))*Out_Values));
+                    END IF;
+                END LOOP;
                 
+                oCycle             <= Out_Cycle_Cnt_Reg;
+                oStream.Data_Valid <= Out_Ready;
+            ELSE
+                oStream.Data_Valid <= '0';
             END IF;
-        END PROCESS;
-        
-    END BEHAVIORAL;
+        END IF;
+    END PROCESS;
+END BEHAVIORAL;

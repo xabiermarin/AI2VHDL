@@ -4,7 +4,7 @@ use IEEE.STD_LOGIC_1164.ALL;
 use IEEE.numeric_std.all; 
 
 
-PACKAGE CNN_Config_Package is
+--PACKAGE CNN_Config_Package is
   CONSTANT CNN_Value_Resolution       : NATURAL := 8;
   CONSTANT CNN_Weight_Resolution      : NATURAL := 8;
   CONSTANT CNN_Parameter_Resolution   : NATURAL := 8;
