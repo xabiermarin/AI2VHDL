@@ -1,150 +1,157 @@
 
---Description: -This component calculates the outputs for one dense neural network layer
---Insertion:   -Specify the paramters with the constants in th CNN_Data file
---             -Connect the Cycle_Reg data and stream signal with the Cycle_Reg or previous layer
+-- Descripción: Este componente calcula las salidas de una capa de densa de una red neuronal
+-- Insertion:   Especifica los parámetros con las contantes del archivo NN_Data
+--              Conecta las señales Cycle_Reg data y stream con el Cycle_Reg o la capa anterior
 
 library IEEE;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
 use ieee.math_real.all;
-use work.CNN_Config_Package.all;
-use work.CNN_Data_Package.all;
+use work.NN_Config_Package.all;
+use work.NN_Data_Package.all;
 
 ENTITY NN_Layer IS
     GENERIC (
-        Inputs          : NATURAL := 16; -- Number of inputs
-        Outputs         : NATURAL := 8;  -- Number of outpus
-        Activation      : Activation_T := relu; -- Activation function
-        Input_Cycles    : NATURAL := 1;  -- In deeper layers, the clock is faster than the new data. So the operation can be done in seperate cycles. Has to be divisor of inputs
-        Calc_Cycles     : NATURAL := 1;  -- Second priority after Cycle_Reg Cycles to make use of more cycles for calculation
-        Output_Cycles   : NATURAL := 1;  -- Output data in multiple cycles, so the next dense layer can calculate the neuron in multiple cycles
-        Output_Delay    : NATURAL := 1;  -- Cycles between Output Values
-        Offset_In       : INTEGER := 0;  -- Offset of Cycle_Reg Values
-        Offset_Out      : INTEGER := 0;  -- Offset of Output Values
-        Offset          : INTEGER := 0; 
-        Weights         : CNN_Weights_T  -- Weight matrix (stored in CNN_Data_Package)
+        Inputs          : NATURAL := 16; -- Número de inputs
+        Outputs         : NATURAL := 8;  -- Número de outpus
+        Activation      : Activation_T := relu; -- Función de activacion
+        Input_Cycles    : NATURAL := 1;  -- Controla en cuantos ciclos entra la información a la capa. Tiene que ser un divisor del numero de entradas
+        Calc_Cycles     : NATURAL := 1;  -- Controla en cuantos ciclos se realizan los cálculos en la capa
+        Output_Cycles   : NATURAL := 1;  -- Controla en cuantos ciclos sale la información de la capa
+        Output_Delay    : NATURAL := 1;  -- Añade ciclos de espera entre valores de salida (útil para sincronización de capas)
+        Offset_In       : INTEGER := 0;  -- Desplazamiento de la coma decimal en punto fijo en los datos de entrada
+        Offset_Out      : INTEGER := 0;  -- Desplazamiento de la coma decimal en punto fijo en los datos de salida
+        Offset          : INTEGER := 0;  -- Despalzamiento de la coma decimal en punto fijo de los pesos almacenados en la ROM
+        Weights         : NN_Weights_T   -- Matriz de pesos de la capa (almacenado en NN_Data_Package)
     );
     PORT (
-        iStream : IN  CNN_Stream_T;
-        iData   : IN  CNN_Values_T(Inputs/Input_Cycles-1 downto 0);
-        iCycle  : IN  NATURAL range 0 to Input_Cycles-1;
+        iStream : IN  NN_Stream_T;  -- Stream de control con Index, Data_Valid y Data_Clk
+        iData   : IN  NN_Values_T(Inputs/Input_Cycles-1 downto 0);  -- Vector de activaciones
+        iCycle  : IN  NATURAL range 0 to Input_Cycles-1;  -- Ciclo de cálculo
         
-        oStream : OUT CNN_Stream_T;
-        oData   : OUT CNN_Values_T(Outputs/Output_Cycles-1 downto 0) := (others => 0);
-        oCycle  : OUT NATURAL range 0 to Output_Cycles-1
+        oStream : OUT NN_Stream_T;  -- Stream de control con Index, Data_Valid y Data_Clk
+        oData   : OUT NN_Values_T(Outputs/Output_Cycles-1 downto 0) := (others => 0);   -- Vector de activaciones
+        oCycle  : OUT NATURAL range 0 to Output_Cycles-1    -- Ciclo de cálculo
     );
 END NN_Layer;
 
 ARCHITECTURE BEHAVIORAL OF NN_Layer IS
-    CONSTANT Calc_Outputs  : NATURAL := Outputs/Calc_Cycles;   --Outputs that are calculated in one cycle
-    CONSTANT Calc_Steps    : NATURAL := Inputs/Input_Cycles;   --Cycle_Reg Values to calculate at once
-    CONSTANT Out_Values    : NATURAL := Outputs/Output_Cycles; --Outputs that are sent at once as output data
-    CONSTANT Offset_Diff   : INTEGER := Offset_Out-Offset_In;  --Relative output value offset
+    CONSTANT Calc_Outputs  : NATURAL := Outputs/Calc_Cycles;   -- Cuantas neuronas de salida se calculan en paralelo por ciclo
+    CONSTANT Calc_Steps    : NATURAL := Inputs/Input_Cycles;   -- Cuantas entradas (Cycle_Reg) se procesan a la vez
+    CONSTANT Out_Values    : NATURAL := Outputs/Output_Cycles; -- Cuantos valores de salida se envian a la vez al siguiente componente
+    CONSTANT Offset_Diff   : INTEGER := Offset_Out-Offset_In;  -- Diferencia relativa entre el offset de salida y entrada (usado para ajustar la escala entre capas)
     
-    CONSTANT Bias_Offset            : INTEGER := Offset_In-Offset-CNN_Sum_Offset;  --General Offset for sum
-    --CONSTANT Bias_Offset            : INTEGER := Offset_In-Offset;  --Test Bias without offset
-    CONSTANT Bias_Offset_Fixed      : INTEGER := max_val(Bias_Offset, 0);          --Offset, with max weight bits in mind
-    CONSTANT Sum_Offset_Bias        : INTEGER := Bias_Offset_Fixed-Bias_Offset; --Offset for sum for bias addition
-    --CONSTANT Sum_Offset_Bias        : INTEGER := CNN_Sum_Offset;   --Test Bias without offset
-    CONSTANT Bias_Offset_Correction : INTEGER := CNN_Sum_Offset - Sum_Offset_Bias; --Offset to correct after sum
+    CONSTANT Bias_Offset            : INTEGER := Offset_In-Offset-NN_Sum_Offset;  -- Desplazamiento bruto necesario para alinear el bias con la suma acumulada
+    CONSTANT Bias_Offset_Fixed      : INTEGER := max_val(Bias_Offset, 0);         -- Recorta el offset a mínimo 0 (porque desplazamiento negativo aquí no tiene sentido)
+    CONSTANT Sum_Offset_Bias        : INTEGER := Bias_Offset_Fixed-Bias_Offset;   -- Cuanto hay que desplazar la suma antes de añadir el bias para que estén en la misma escala
+    CONSTANT Bias_Offset_Correction : INTEGER := NN_Sum_Offset - Sum_Offset_Bias; -- Calcula la correción restante que hay que aplicar despues de sumar el bias
 
-     --Save Bias seperately in one constant -----
-    FUNCTION Init_Bias ( weights_in : CNN_Weights_T; filters : NATURAL; inputs : NATURAL; Offset_In : INTEGER) RETURN  CNN_Weights_T IS
-    VARIABLE Bias_Const    : CNN_Weights_T(0 to filters-1, 0 to 0);
-BEGIN
-    FOR i in 0 to filters-1 LOOP
-        --Bias_Const(i,0) := adjust_offset(weights_in(i,inputs), Offset_In-Offset);
-        Bias_Const(i,0) := adjust_offset(weights_in(i,inputs), Bias_Offset_Fixed);
-    END LOOP;
-    
-    return Bias_Const;
-END FUNCTION;
-
-CONSTANT Bias_Const    : CNN_Weights_T(0 to Outputs-1, 0 to 0) := Init_Bias(Weights, Outputs, Inputs, Offset_In);
-
-    --Save Weights in a ROM depending on the number of weights that are needed per calculation cycle
-type ROM_Array is array (0 to Calc_Cycles*Input_Cycles-1) of STD_LOGIC_VECTOR(Calc_Outputs * Calc_Steps * CNN_Weight_Resolution - 1 downto 0);
-
-FUNCTION Init_ROM ( weights_in : CNN_Weights_T; filters : NATURAL; inputs : NATURAL; elements : NATURAL; calc_filters : NATURAL; calc_steps : NATURAL) RETURN  ROM_Array IS
-VARIABLE rom_reg : ROM_Array;
-VARIABLE filters_cnt : NATURAL range 0 to filters := 0;
-VARIABLE inputs_cnt  : NATURAL range 0 to inputs := 0;
-VARIABLE element_cnt : NATURAL range 0 to elements := 0;
-VARIABLE this_weight : STD_LOGIC_VECTOR(CNN_Weight_Resolution-1 downto 0);
-BEGIN
-    filters_cnt := 0;
-    inputs_cnt  := 0;
-    element_cnt := 0;
-    WHILE inputs_cnt < inputs LOOP
-        filters_cnt := 0;
-        WHILE filters_cnt < filters LOOP
-            FOR s in 0 to calc_steps-1 LOOP
-                FOR f in 0 to calc_filters-1 LOOP
-                    this_weight :=  STD_LOGIC_VECTOR(TO_SIGNED(weights_in(filters_cnt+f, inputs_cnt+s), CNN_Weight_Resolution));
-                    rom_reg(element_cnt)(CNN_Weight_Resolution*(1+s*calc_filters+f)-1 downto CNN_Weight_Resolution*(s*calc_filters+f)) := this_weight;
-                END LOOP;
-            END LOOP;
-            filters_cnt := filters_cnt + calc_filters;
-            element_cnt := element_cnt + 1;
+    -- ============================================================================
+    -- Extaer el bias de la matriz de peso y guardar por separado aplicando offset 
+    -- ============================================================================ 
+    FUNCTION Init_Bias ( weights_in : NN_Weights_T; neurons : NATURAL; inputs : NATURAL; Offset_In : INTEGER) RETURN  NN_Parameters_T IS
+        VARIABLE Bias_Const : NN_Parameters_T(0 to neurons-1);
+    BEGIN
+        FOR i in 0 to neurons-1 LOOP
+            Bias_Const(i) := adjust_offset(weights_in(i,inputs), Bias_Offset_Fixed);
         END LOOP;
-        inputs_cnt  := inputs_cnt + calc_steps;
-    END LOOP;
+        
+        return Bias_Const;  
+    END FUNCTION;
+
+    CONSTANT Bias_Const : NN_Parameters_T(0 to Outputs-1) := Init_Bias(Weights, Outputs, Inputs, Offset_In); -- Vector de bias
+
+
+    type ROM_Array is array (0 to Calc_Cycles*Input_Cycles-1) of STD_LOGIC_VECTOR(Calc_Outputs * Calc_Steps * NN_Weight_Resolution - 1 downto 0); -- Define cómo se organiza la ROM en hardware. Array donde cada  posición contiene un vector de bits que agrupa todos los pesos necesarios para un ciclo de cálculo
+
+    -- ==============================================================================================
+    -- Guardar los pesos en una ROM en base al número de pesos que se necesitan por ciclo de cálculo
+    -- ==============================================================================================
+    FUNCTION Init_ROM ( weights_in : NN_Weights_T; neurons : NATURAL; inputs : NATURAL; elements : NATURAL; calc_neurons : NATURAL; calc_steps : NATURAL) RETURN  ROM_Array IS
+        VARIABLE rom_reg : ROM_Array;
+        VARIABLE neurons_cnt : NATURAL range 0 to neurons := 0;
+        VARIABLE inputs_cnt  : NATURAL range 0 to inputs := 0;
+        VARIABLE element_cnt : NATURAL range 0 to elements := 0;
+        VARIABLE this_weight : STD_LOGIC_VECTOR(NN_Weight_Resolution-1 downto 0);
+    BEGIN
+        neurons_cnt := 0;
+        inputs_cnt  := 0;
+        element_cnt := 0;
+        WHILE inputs_cnt < inputs LOOP
+            neurons_cnt := 0;
+            WHILE neurons_cnt < neurons LOOP
+                FOR s in 0 to calc_steps-1 LOOP
+                    FOR f in 0 to calc_neurons-1 LOOP
+                        this_weight :=  STD_LOGIC_VECTOR(TO_SIGNED(weights_in(neurons_cnt+f, inputs_cnt+s), NN_Weight_Resolution));
+                        rom_reg(element_cnt)(NN_Weight_Resolution*(1+s*calc_neurons+f)-1 downto NN_Weight_Resolution*(s*calc_neurons+f)) := this_weight;
+                    END LOOP;
+                END LOOP;
+                neurons_cnt := neurons_cnt + calc_neurons;
+                element_cnt := element_cnt + 1;
+            END LOOP;
+            inputs_cnt  := inputs_cnt + calc_steps;
+        END LOOP;
+        
+        return rom_reg;
+    END FUNCTION;
+
+    -- ROM para guardar los pesos
+    SIGNAL ROM : ROM_Array := Init_ROM(Weights, Outputs, Inputs, Calc_Cycles*Input_Cycles, Calc_Outputs, Calc_Steps);   -- Señal que almacena la ROM inicializada con Init_ROM
+    SIGNAL ROM_Addr  : NATURAL range 0 to Calc_Cycles*Input_Cycles-1;   -- Direccion de ROM por ciclo
+    SIGNAL ROM_Data  : STD_LOGIC_VECTOR(Calc_Outputs * Calc_Steps * NN_Weight_Resolution - 1 downto 0); -- Dato leido de la ROM por ciclo
+
+    CONSTANT value_max     : NATURAL := 2**(NN_Value_Resolution-1)-1;   -- Valor máximo representable con la resolución configurada
+    CONSTANT bits_max      : NATURAL := NN_Value_Resolution - 1 + max_val(Offset, 0) + integer(ceil(log2(real(Inputs + 1))));   -- Cuantos bits necesita el acumulador interno para no desborarse durante la suma de todos los procesos peso*entrada
+
+    -- RAM para cuando el cálculo se divide en múltiples ciclos
+    type sum_set_t is array (0 to Calc_Outputs-1) of SIGNED(bits_max downto 0); -- Array que contiene las sumas parciales de todas las neuronas que se calculan en paralelo en un ciclo
+    type sum_ram_t is array (natural range <>) of sum_set_t;    -- Array de sum_set_t. Una entrada por cada ciclo de cálculo
+    SIGNAL SUM_RAM : sum_ram_t(0 to Calc_Cycles-1) := (others => (others => (others => '0')));
+    SIGNAL SUM_Rd_Addr  : NATURAL range 0 to Calc_Cycles-1;     -- Puerto de dirección de lectura
+    SIGNAL SUM_Rd_Data  : sum_set_t;                            -- Puerto de datos de lectura
+    SIGNAL SUM_Wr_Addr  : NATURAL range 0 to Calc_Cycles-1;     -- Puerto de dirección de escritura
+    SIGNAL SUM_Wr_Data  : sum_set_t;                            -- Puerto de datos de escritura
+    SIGNAL SUM_Wr_Ena   : STD_LOGIC := '1';                     -- Puerto de habilitar escritura
+
+    -- RAM que almacena los valores de salida ya activados antes de enviarlos a la siguiente capa
+    CONSTANT OUT_RAM_Elements : NATURAL := min_val(Calc_Cycles, Output_Cycles);  -- Numero de entradas de la RAM (Mínimo entre Calc_Cycles y Output_Cycles para usar la menor memoria posible)
+    type OUT_set_t is array (0 to Outputs/OUT_RAM_Elements-1) of SIGNED(NN_Value_Resolution-1 downto 0);    -- Array de valores de salida que se escriben juntos en un ciclo
+    type OUT_ram_t is array (natural range <>) of OUT_set_t;    -- Array de OUT_set_t. Una entrada por cada ciclo de cálculo
+    SIGNAL OUT_RAM      : OUT_ram_t(0 to OUT_RAM_Elements-1) := (others => (others => (others => '0')));
+    SIGNAL OUT_Rd_Addr  : NATURAL range 0 to OUT_RAM_Elements-1;    -- Puerto de dirección de lectura
+    SIGNAL OUT_Rd_Data  : OUT_set_t;                                -- Puerto de datos de lectura
+    SIGNAL OUT_Wr_Addr  : NATURAL range 0 to OUT_RAM_Elements-1;    -- Puerto de dirección de escritura
+    SIGNAL OUT_Wr_Data  : OUT_set_t;                                -- Puerto de datos de escritura
+    SIGNAL OUT_Wr_Ena   : STD_LOGIC := '1';                         -- Puerto de habilitar escritura
     
-    return rom_reg;
-END FUNCTION;
+    -- Señales de control
+    SIGNAL Calc_En           : BOOLEAN := false;  -- Indica que hay un cálculo en curso
+    SIGNAL Calc_En_Sum       : BOOLEAN := false;  -- Indica que el cálculo de la suma de la red neuronal está en curso
+    SIGNAL Output_Bias_Reg   : NATURAL range 0 to Calc_Cycles := 0; -- Lleva la cuenta de a qué neurona se le está añadiendo el bias
+    SIGNAL Add_Bias          : BOOLEAN := false;  -- Indica que la suma se ha calculado y que se puede añadir el bias
+    SIGNAL Last_Input        : STD_LOGIC;         -- Indica que el cálculo ha finalizado y la salida se puede enviar a la siguiente capa
+    SIGNAL Out_Cycle_Cnt_Reg : NATURAL range 0 to Output_Cycles-1 := Output_Cycles-1;  -- Salida actual que lleva un ciclo de retraso, por lo que se puede leer de la RAM
+    SIGNAL Out_Delay_Cnt     : NATURAL range 0 to Output_Delay-1 := Output_Delay-1;    -- Contador para retrasar los valores de salida que se envian uno tras otro
+    SIGNAL Out_Ready         : STD_LOGIC;  -- Verdarero si los datos de salida se pueden leer de la RAM
 
-SIGNAL ROM : ROM_Array := Init_ROM(Weights, Outputs, Inputs, Calc_Cycles*Input_Cycles, Calc_Outputs, Calc_Steps);
-SIGNAL ROM_Addr  : NATURAL range 0 to Calc_Cycles*Input_Cycles-1;
-SIGNAL ROM_Data  : STD_LOGIC_VECTOR(Calc_Outputs * Calc_Steps * CNN_Weight_Resolution - 1 downto 0);
+    SIGNAL iData_Reg         : NN_Values_T(Inputs/Input_Cycles-1 downto 0); -- Registra los datos de entrada un ciclo para que estén disponivles cuando se cargan los pesos de la ROM 
 
-CONSTANT value_max     : NATURAL := 2**(CNN_Value_Resolution-1)-1;
-    --Maximum bits for sum of convolution
-CONSTANT bits_max      : NATURAL := CNN_Value_Resolution - 1 + max_val(Offset, 0) + integer(ceil(log2(real(Inputs + 1))));
-
-    --RAM for colvolution sum
-type sum_set_t is array (0 to Calc_Outputs-1) of SIGNED(bits_max downto 0);
-type sum_ram_t is array (natural range <>) of sum_set_t;
-SIGNAL SUM_RAM : sum_ram_t(0 to Calc_Cycles-1) := (others => (others => (others => '0')));
-SIGNAL SUM_Rd_Addr  : NATURAL range 0 to Calc_Cycles-1;
-SIGNAL SUM_Rd_Data  : sum_set_t;
-SIGNAL SUM_Wr_Addr  : NATURAL range 0 to Calc_Cycles-1;
-SIGNAL SUM_Wr_Data  : sum_set_t;
-SIGNAL SUM_Wr_Ena   : STD_LOGIC := '1';
-
-    --RAM for output values
-CONSTANT OUT_RAM_Elements : NATURAL := min_val(Calc_Cycles,Output_Cycles);
-type OUT_set_t is array (0 to Outputs/OUT_RAM_Elements-1) of SIGNED(CNN_Value_Resolution-1 downto 0);
-type OUT_ram_t is array (natural range <>) of OUT_set_t;
-SIGNAL OUT_RAM      : OUT_ram_t(0 to OUT_RAM_Elements-1) := (others => (others => (others => '0')));
-SIGNAL OUT_Rd_Addr  : NATURAL range 0 to OUT_RAM_Elements-1;
-SIGNAL OUT_Rd_Data  : OUT_set_t;
-SIGNAL OUT_Wr_Addr  : NATURAL range 0 to OUT_RAM_Elements-1;
-SIGNAL OUT_Wr_Data  : OUT_set_t;
-SIGNAL OUT_Wr_Ena   : STD_LOGIC := '1';
-
-SIGNAL Calc_En           : BOOLEAN := false;  --True while neural net is calculated
-SIGNAL Calc_En_Sum       : BOOLEAN := false;  --True while sum part of neural net is calculated
-SIGNAL Output_Bias_Reg   : NATURAL range 0 to Calc_Cycles := 0; --Current output for the bias calculation
-SIGNAL Add_Bias          : BOOLEAN := false;  --True if sum is calculated and bias can be added
-SIGNAL Last_Input        : STD_LOGIC;         --True if the calculation is done and the output can be sent to next layer
-SIGNAL iData_Reg         : CNN_Values_T(Inputs/Input_Cycles-1 downto 0);
-SIGNAL Out_Cycle_Cnt_Reg : NATURAL range 0 to Output_Cycles-1 := Output_Cycles-1;  --Current Output that is one cycle delayed, so the output value can be read from RAM
-SIGNAL Out_Delay_Cnt     : NATURAL range 0 to Output_Delay-1 := Output_Delay-1;    --Counter to delay the output values that are sent one after another
-SIGNAL Out_Ready         : STD_LOGIC;         --True if the output data can be read from the RAM
-
-CONSTANT Group_Sum_Results    : NATURAL := integer(ceil(real(Calc_Steps)/real(CNN_Mult_Sum_Group)));
-CONSTANT Real_Group_Sum_Size  : NATURAL := Calc_Steps/Group_Sum_Results;
-CONSTANT Group_Sum_Bits       : NATURAL := integer(ceil(log2(real(Real_Group_Sum_Size)))); -- Additional Bits to calculate sum of first values in group
-CONSTANT Group_Sum_Total_Bits : NATURAL := Bool_Select(CNN_Shift_Before_Sum, bits_max+1, CNN_Value_Resolution+CNN_Weight_Resolution-1)+Group_Sum_Bits;
-type prod_array_t is array (0 to Calc_Outputs-1, 0 to Group_Sum_Results-1) of SIGNED(Group_Sum_Total_Bits-1 downto 0);
-signal Prod_Buf   : prod_array_t := (others => (others => (others =>'0')));
-SIGNAL SUM_Rd_Addr_Reg  : NATURAL range 0 to Calc_Cycles-1; -- Delay Addresses by one cycle to have sum in separate cycle
+    -- Constantes de agrupación de productos
+    CONSTANT Group_Sum_Results    : NATURAL := INTEGER(ceil(REAL(Calc_Steps) / REAL(NN_Mult_Sum_Group))); -- Cuantos grupos de productos hay
+    CONSTANT Real_Group_Sum_Size  : NATURAL := Calc_Steps / Group_Sum_Results;  -- Tamaño real de cada grupo tras la división
+    CONSTANT Group_Sum_Bits       : NATURAL := INTEGER(ceil(log2(REAL(Real_Group_Sum_Size)))); -- Bits extra necesarios para acumular dentro de un grupo sin desbordamiento
+    CONSTANT Group_Sum_Total_Bits : NATURAL := Bool_Select(NN_Shift_Before_Sum, bits_max+1, NN_Value_Resolution + NN_Weight_Resolution -1) + Group_Sum_Bits; -- Ancho total de cada producto agrupado 
+    type prod_array_t is array (0 to Calc_Outputs-1, 0 to Group_Sum_Results-1) of SIGNED(Group_Sum_Total_Bits-1 downto 0); -- Buffer 2D que almacena los productos intermedios entre un ciclo de reloj y el siguiente
+    signal Prod_Buf   : prod_array_t := (others => (others => (others =>'0'))); -- Buffer 2D donde se guardan los productos agrupados, una entrada por neurona y grupo
+    SIGNAL SUM_Rd_Addr_Reg  : NATURAL range 0 to Calc_Cycles-1; -- Registro con un con un ciclo de retraso de la dirección de lectura de la RAM
 
 BEGIN
     oStream.Data_CLK <= iStream.Data_CLK;
-    
-    --Weight ROM RAM
-    
+
+    -- =============================
+    -- Proceso de lecutra de la ROM
+    -- =============================
+    --  En cada flanco de subida del reloj lee la posición ROM_Addr de la ROM y la coloca en ROM_Data
     PROCESS (iStream)
     BEGIN
         IF (rising_edge(iStream.Data_CLK)) THEN
@@ -152,8 +159,11 @@ BEGIN
         END IF;
     END PROCESS;
     
-    --Sum RAM to save last calculated output values
-    
+    -- ===============================================
+    -- Proceso de escritura síncrona de la RAM de suma
+    -- ===============================================
+    -- Escribe en la RAM de suma cuando SUM_Wr_Ena está activo
+    -- La señal de habilitación permite controlar exactamente cuándo se escribe, evitando sobrescribir datos válidos con basura entre cálculos
     PROCESS (iStream)
     BEGIN
         IF (rising_edge(iStream.Data_CLK)) THEN
@@ -162,11 +172,14 @@ BEGIN
             END IF;
         END IF;
     END PROCESS;
-    
-    SUM_Rd_Data      <= SUM_RAM(SUM_Rd_Addr);
+      
+    SUM_Rd_Data <= SUM_RAM(SUM_Rd_Addr);  -- Lectura combinacional (asíncrona) de la  RAM
     
     --Output RAM to save values after convolution and send them one by one to next convolution
-    
+    -- =================================================
+    -- Proceso de escritura síncrona de la RAM de salida
+    -- =================================================
+    -- Escribe en la RAM de suma cuando OUT_Wr_Ena está activo
     PROCESS (iStream)
     BEGIN
         IF (rising_edge(iStream.Data_CLK)) THEN
@@ -176,96 +189,95 @@ BEGIN
         END IF;
     END PROCESS;
     
-    OUT_Rd_Data      <= OUT_RAM(OUT_Rd_Addr);
+    OUT_Rd_Data <= OUT_RAM(OUT_Rd_Addr); -- Lectura combinacional (asíncrona) de la  RAM
     
     --Multiply input data with weights and create sum
     
     PROCESS (iStream)
-    --Keep track of current calculations of the convolution matrix
-    VARIABLE Cycle_Reg     : NATURAL range 0 to Input_Cycles-1;                  --Counter for the current input value calculation
-    VARIABLE Cycle_Reg_2   : NATURAL range 0 to Input_Cycles-1;
-    VARIABLE Output_Cnt    : NATURAL range 0 to Calc_Cycles := 0;                --Counter for the current output to calculate
-    VARIABLE Output_Cnt_2  : NATURAL range 0 to Calc_Cycles := 0;
-    VARIABLE Element_Cnt   : NATURAL range 0 to Calc_Cycles*Input_Cycles-1 := 0; --Counter for current calculation step overall
-    VARIABLE Element_Reg   : NATURAL range 0 to Calc_Cycles*Input_Cycles-1 := 0;
+    -- Variables del proceso princiàñ    
     
-    VARIABLE Weights_Buf : CNN_Weights_T(0 to Calc_Outputs-1, 0 to Calc_Steps-1);
+    -- Variables para seguimiento del cálculo actual
+        VARIABLE Cycle_Reg     : NATURAL range 0 to Input_Cycles-1;                  -- Lleva la cuenta del ciclo de entrada actual
+        VARIABLE Cycle_Reg_2   : NATURAL range 0 to Input_Cycles-1;                  -- Version con un ciclo de retraso de Cycle_Reg
+        VARIABLE Output_Cnt    : NATURAL range 0 to Calc_Cycles := 0;                -- Cuenta qué grupo de neuronas de salida se están calculando actualmente
+        VARIABLE Output_Cnt_2  : NATURAL range 0 to Calc_Cycles := 0;                -- Version con un ciclo de retraso de Output_Cnt
+        VARIABLE Element_Cnt   : NATURAL range 0 to Calc_Cycles*Input_Cycles-1 := 0; -- Cuenta el paso global del cálculo combinado de ciclos de entrada
+        VARIABLE Element_Reg   : NATURAL range 0 to Calc_Cycles*Input_Cycles-1 := 0; -- Cuenta el paso global del cálculo combinado de ciclos de salida
+        
+        VARIABLE Weights_Buf : NN_Weights_T(0 to Calc_Outputs-1, 0 to Calc_Steps-1); -- Buffer local donde se desempaquetan los pesos leídos de la ROM para poder acceder a ellos por índice de neurona y entrada
+        
+        -- Variables para escribir las salida calculadas en la RAM de salida
+        type     Act_sum_t is array (Calc_Outputs-1 downto 0) of SIGNED(NN_Value_Resolution-1 downto 0); -- Array para almacenar las activaciones ya calculadas 
+        VARIABLE Act_sum : Act_sum_t;   -- Almacena las activaciones ya calculadas antes de escribirlas en la RAM de salida
+        CONSTANT Act_sum_buf_cycles : NATURAL := Calc_Cycles/OUT_RAM_Elements;  -- Buffer adicional para cuando hay que acumulas varios ciclos de cálculo antes de escribir en la RAM
+        type     Act_sum_buf_t is array (Act_sum_buf_cycles-1 downto 0) of Act_sum_t;  -- Array para almacenar las activaciones ya calculadas 
+        VARIABLE Act_sum_buf     : Act_sum_buf_t;   -- Almacena las activaciones ya calculadas antes de escribirlas en la RAM de salida
+        VARIABLE Act_sum_buf_cnt : NATURAL range 0 to Act_sum_buf_cycles-1 := 0;  -- Buffer adicional para cuando hay que acumulas varios ciclos de cálculo antes de escribir en la RAM
+        
+        VARIABLE Out_Cycle_Cnt : NATURAL range 0 to Output_Cycles-1 := Output_Cycles-1;  -- Cuenta que ciclo de salida en que ciclo de salida se está enviando datos a la siguiente capa
+        
+        -- Suma actual durante el cálculo
+        VARIABLE sum : sum_set_t := (others => (others => '0'));            -- Suma acumulada actual (Se le van sumando productos cada ciclo)
+        VARIABLE Sum_Reg    : sum_set_t := (others => (others => '0'));     -- Copia registrada en el momento de añadir el bias (Valor de sum al registrar útlima entrada)
+        
+        VARIABLE Group_Sum_Counter  : NATURAL range 0 to Real_Group_Sum_Size := 0;  -- Cuenta cuántos productos se han acumulado en Prod_Sum_Buf dentro del grupo actual
+        VARIABLE Prod_Sum_Cntr      : NATURAL range 0 to Group_Sum_Results := 0;    --cuenta en qué grupo se está trabajando, para saber en qué posición de Prod_Buf guardar el resultado cuando el grupo esté completo
+        VARIABLE Prod_Sum_Buf       : SIGNED(Group_Sum_Total_Bits-1 downto 0);      -- Acumulador temporal donde se van sumando los productos de un mismo grupo antes de guardarse en Prod_Buf
     
-    --Variables to write calculated outputs into the Out RAM
-    type     Act_sum_t is array (Calc_Outputs-1 downto 0) of SIGNED(CNN_Value_Resolution-1 downto 0);
-    VARIABLE Act_sum : Act_sum_t;
-    CONSTANT Act_sum_buf_cycles : NATURAL := Calc_Cycles/OUT_RAM_Elements;
-    type     Act_sum_buf_t is array (Act_sum_buf_cycles-1 downto 0) of Act_sum_t;
-    VARIABLE Act_sum_buf     : Act_sum_buf_t;
-    VARIABLE Act_sum_buf_cnt : NATURAL range 0 to Act_sum_buf_cycles-1 := 0;
-    
-    VARIABLE Out_Cycle_Cnt : NATURAL range 0 to Output_Cycles-1 := Output_Cycles-1;
-    
-    --Current sum for calculation (part of the sum RAM)
-    VARIABLE sum : sum_set_t := (others => (others => '0'));
-    VARIABLE Sum_Reg    : sum_set_t := (others => (others => '0'));
-    
-    VARIABLE Group_Sum_Counter  : NATURAL range 0 to Real_Group_Sum_Size := 0;
-    VARIABLE Prod_Sum_Cntr      : NATURAL range 0 to Group_Sum_Results := 0;
-    VARIABLE Prod_Sum_Buf       : SIGNED(Group_Sum_Total_Bits-1 downto 0);
-    BEGIN
+        BEGIN
         IF (rising_edge(iStream.Data_CLK)) THEN
-            Calc_En_Sum <= Calc_En;
+            Calc_En_Sum <= Calc_En;  -- Retrasa la señal de habilitación un ciclo, creando el pipeline entre la multiplicación y la suma 
             
-            Last_Input <= '0';
-            Add_Bias   <= false;
+            Last_Input <= '0';      -- Reset
+            Add_Bias   <= false;    -- Reset
             
-            --Save weights from ROM in Variable with CNN_Weight datatype
+            -- Desempaquetar los pesos de ROM_Data en Weights_Buf (Variable con datatype NN_Weight)
             FOR s in 0 to Calc_Steps-1 LOOP
                 FOR f in 0 to Calc_Outputs-1 LOOP
-                    Weights_Buf(f, s) := TO_INTEGER(SIGNED(ROM_Data(CNN_Weight_Resolution*(1+s*Calc_Outputs+f)-1 downto CNN_Weight_Resolution*(s*Calc_Outputs+f))));
+                    Weights_Buf(f, s) := TO_INTEGER(SIGNED(ROM_Data(NN_Weight_Resolution * (1 + s * Calc_Outputs+f)-1 downto NN_Weight_Resolution * (s * Calc_Outputs + f))));
                 END LOOP;
             END LOOP;
             
-            --Add bias to sum after convolution and write to Out RAM
+
+            -- Añadir bias, aplicar función de activación y escribir en OUT RAM
             IF (Add_Bias) THEN
                 --Values for multiple outputs can be calculated
                 FOR o in 0 to Calc_Outputs-1 LOOP
-                    --Add bias with weight offset
-                    --Sum_Reg(o) := resize(Sum_Reg(o) + resize(shift_with_rounding(to_signed(Bias_Const(o+Output_Bias_Reg*Calc_Outputs, 0), CNN_Weight_Resolution+Offset), Offset*(-1)),bits_max+1),bits_max+1);
-                    --Sum_Reg(o) := resize(Sum_Reg(o) + to_signed(Bias_Const(o+Output_Bias_Reg*Calc_Outputs, 0), bits_max+1),bits_max+1);
-                    IF CNN_Rounding(1) = '1' THEN
-                        Sum_Reg(o) := resize(shift_with_rounding(Sum_Reg(o), Sum_Offset_Bias) + to_signed(Bias_Const(o+Output_Bias_Reg*Calc_Outputs, 0), bits_max+1),bits_max+1);
+                    -- Añadir el bias con el offset de los pesos
+                    IF NN_Rounding(1) = '1' THEN
+                        Sum_Reg(o) := resize(shift_with_rounding(Sum_Reg(o), Sum_Offset_Bias) + to_signed(Bias_Const(o+Output_Bias_Reg*Calc_Outputs), bits_max+1),bits_max+1);
                     ELSE
-                        Sum_Reg(o) := resize(shift_bits(Sum_Reg(o), Sum_Offset_Bias) + to_signed(Bias_Const(o+Output_Bias_Reg*Calc_Outputs, 0), bits_max+1),bits_max+1);
+                        Sum_Reg(o) := resize(shift_bits(Sum_Reg(o), Sum_Offset_Bias) + to_signed(Bias_Const(o+Output_Bias_Reg*Calc_Outputs), bits_max+1),bits_max+1);
                     END IF;
 
-                    --Apply output offset with relative offset from this and last layer
-                    --Sum_Reg(o) := shift_with_rounding(Sum_Reg(o), Offset_Diff);
-                    IF CNN_Rounding(2) = '1' THEN
+                    -- Ajustar el offset de salida
+                    IF NN_Rounding(2) = '1' THEN
                         Sum_Reg(o) := shift_with_rounding(Sum_Reg(o), Offset_Diff+Bias_Offset_Correction);
                     ELSE
                         Sum_Reg(o) := shift_bits(Sum_Reg(o), Offset_Diff+Bias_Offset_Correction);
                     END IF;
                     
-                    --Apply Activation function
+                    -- Aplicar la función de activación
                     IF (Activation = relu) THEN
-                        Act_sum(o) := resize(relu_f(Sum_Reg(o), value_max), CNN_Value_Resolution);
+                        Act_sum(o) := resize(relu_f(Sum_Reg(o), value_max), NN_Value_Resolution);
                     ELSIF (Activation = linear) THEN
-                        Act_sum(o) := resize(linear_f(Sum_Reg(o), value_max), CNN_Value_Resolution);
+                        Act_sum(o) := resize(linear_f(Sum_Reg(o), value_max), NN_Value_Resolution);
                     ELSIF (Activation = leaky_relu) THEN
-                        Act_sum(o) := resize(leaky_relu_f(Sum_Reg(o), value_max, CNN_Value_Resolution + max_val(Offset, 0) + integer(ceil(log2(real(Inputs + 1))))), CNN_Value_Resolution);
+                        Act_sum(o) := resize(leaky_relu_f(Sum_Reg(o), value_max, NN_Value_Resolution + max_val(Offset, 0) + integer(ceil(log2(real(Inputs + 1))))), NN_Value_Resolution);
                     ELSIF (Activation = step_func) THEN
-                        Act_sum(o) := resize(step_f(Sum_Reg(o)), CNN_Value_Resolution);
+                        Act_sum(o) := resize(step_f(Sum_Reg(o)), NN_Value_Resolution);
                     ELSIF (Activation = sign_func) THEN
-                        Act_sum(o) := resize(sign_f(Sum_Reg(o)), CNN_Value_Resolution);
+                        Act_sum(o) := resize(sign_f(Sum_Reg(o)), NN_Value_Resolution);
                     END IF;
                 END LOOP;
                 
-                --The Output RAM has a fixed width for the number of outputs that are sent at once
-                IF (Calc_Cycles = OUT_RAM_Elements) THEN
-                    --The calculated output values are either written to the RAM directly
+                -- Escribir las activaciones calculadas en la RAM de salida (tiene un número fijo de outputs que se envian cada vez)
+                IF (Calc_Cycles = OUT_RAM_Elements) THEN  -- Cada grupo de activaciones se escribe directamente en la RAM en su posición correspondiente
                     OUT_Wr_Addr <= Output_Bias_Reg;
                     FOR i in 0 to Calc_Outputs-1 LOOP
                         OUT_Wr_Data(i) <= Act_sum(i);
                     END LOOP;
-                ELSE
-                    --Or the last outputs are saved and then saved in the RAM at once
+                ELSE  -- Cuando hay más ciclos de cálculo que entradas de RAM, hay que acumular varios grupos de activaciones en Act_sum_buf antes de escribirlos juntos
                     Act_sum_buf_cnt := Output_Bias_Reg mod Act_sum_buf_cycles;
                     Act_sum_buf(Act_sum_buf_cnt) := Act_sum;
                     IF (Act_sum_buf_cnt = Act_sum_buf_cycles-1) THEN
@@ -278,49 +290,46 @@ BEGIN
                     END IF;
                 END IF;
 
-                --Send output data after all steps of the neural net are done
-                IF (Output_Bias_Reg = Calc_Cycles-1) THEN
-                    Last_Input <= '1';
+                -- Enviar los datos de salida cuando todos los pasos de la red neuronal están hechos
+                IF (Output_Bias_Reg = Calc_Cycles-1) THEN  -- Significa que se ha procesado la última neurona
+                    Last_Input <= '1';  -- Se activa Last_Input para señalizar que la capa ha terminado su cálculo
                 END IF;
             END IF;
             
-            --Calculate the neural net
-            IF (Calc_En_Sum) THEN
-                --Read last sum from RAM if the calculation for the output is split
-                IF (Calc_Cycles > 1) THEN
+            -- Acumulación de la suma (Cálculo de la red neuronal)
+            IF (Calc_En_Sum) THEN  -- Se ejecuta cuando Calc_En_Sum está activo, es decir un ciclo después de calcular los productos
+                -- Carga la útlima suma guardada en la RAM si el cálculo esta dividido en más de un ciclo
+                IF (Calc_Cycles > 1) THEN  
                     sum := SUM_Rd_Data;
                 END IF;
                 
-                --Set sum to 0 for first calculation
+                -- Si es el primer ciclo de entrada se resetea sum
                 IF (Cycle_Reg_2 = 0) THEN
                     sum := (others => (others => '0'));
                 END IF;
                 
-                --Calculate the output values
+                -- Calcula los valores de salida
                 FOR o in 0 to Calc_Outputs-1 LOOP
                     FOR i in 0 to Group_Sum_Results-1 LOOP
-                        IF CNN_Shift_Before_Sum THEN
+                        IF NN_Shift_Before_Sum THEN         -- Con True suma directamente Prod_Buf sin desplazar
                             sum(o) := resize(sum(o) + Prod_Buf(o, i), bits_max+1);
                         ELSE
-                            IF CNN_Rounding(0) = '1' THEN
-                                sum(o) := resize(sum(o) + resize(shift_with_rounding(Prod_Buf(o, i), CNN_Weight_Resolution-Offset-1-CNN_Sum_Offset),bits_max+1),bits_max+1);
+                            IF NN_Rounding(0) = '1' THEN    -- Con False desplaza cada Prod_Buf antes de sumarlo 
+                                sum(o) := resize(sum(o) + resize(shift_with_rounding(Prod_Buf(o, i), NN_Weight_Resolution-Offset-1-NN_Sum_Offset),bits_max+1),bits_max+1);
                             ELSE
-                                sum(o) := resize(sum(o) + resize(shift_bits(Prod_Buf(o, i), CNN_Weight_Resolution-Offset-1-CNN_Sum_Offset),bits_max+1),bits_max+1);
+                                sum(o) := resize(sum(o) + resize(shift_bits(Prod_Buf(o, i), NN_Weight_Resolution-Offset-1-NN_Sum_Offset),bits_max+1),bits_max+1);
                             END IF;
                         END IF;
                     END LOOP;
                 END LOOP;
                 
-                --If this is the last data, add the bias
+                --  Si es el último ciclo de entrada, congela la suma en Sum_Reg y activa Add_Bias para que el bloque anterior añada el bias en el siguiente ciclo
                 IF (Cycle_Reg_2 = Input_Cycles-1) THEN
-                    --For o in 0 to Calc_Outputs-1 LOOP
-                    --    Sum_Reg(o)  := shift_with_rounding(sum(o), CNN_Sum_Offset);
-                    --END LOOP;
                     Sum_Reg  := sum;
                     Add_Bias <= true;
                 END IF;
                 
-                --Save result in RAM if the calculation is split
+                -- Si el calculo se divide en varios ciclos, guarda la suma parcial en la RAM
                 IF (Calc_Cycles > 1) THEN
                     SUM_Wr_Data <= sum;
                 END IF;
@@ -338,14 +347,14 @@ BEGIN
                     Prod_Sum_Cntr     := 0;
                     Prod_Sum_Buf := (others => '0');
                     FOR i in 0 to Calc_Steps-1 LOOP
-                        IF CNN_Shift_Before_Sum THEN
-                            IF CNN_Rounding(0) = '1' THEN
-                                Prod_Sum_Buf := Prod_Sum_Buf + resize(shift_with_rounding(to_signed(iData_Reg(i) * Weights_Buf(o, i), CNN_Value_Resolution+CNN_Weight_Resolution-1), CNN_Weight_Resolution-Offset-1-CNN_Sum_Offset),bits_max+1);
+                        IF NN_Shift_Before_Sum THEN
+                            IF NN_Rounding(0) = '1' THEN
+                                Prod_Sum_Buf := Prod_Sum_Buf + resize(shift_with_rounding(to_signed(iData_Reg(i) * Weights_Buf(o, i), NN_Value_Resolution+NN_Weight_Resolution-1), NN_Weight_Resolution-Offset-1-NN_Sum_Offset),bits_max+1);
                             ELSE
-                                Prod_Sum_Buf := Prod_Sum_Buf + resize(shift_bits(to_signed(iData_Reg(i) * Weights_Buf(o, i), CNN_Value_Resolution+CNN_Weight_Resolution-1), CNN_Weight_Resolution-Offset-1-CNN_Sum_Offset),bits_max+1);
+                                Prod_Sum_Buf := Prod_Sum_Buf + resize(shift_bits(to_signed(iData_Reg(i) * Weights_Buf(o, i), NN_Value_Resolution+NN_Weight_Resolution-1), NN_Weight_Resolution-Offset-1-NN_Sum_Offset),bits_max+1);
                             END IF;
                         ELSE
-                            Prod_Sum_Buf := Prod_Sum_Buf + to_signed(iData_Reg(i) * Weights_Buf(o, i), CNN_Value_Resolution+CNN_Weight_Resolution-1);
+                            Prod_Sum_Buf := Prod_Sum_Buf + to_signed(iData_Reg(i) * Weights_Buf(o, i), NN_Value_Resolution+NN_Weight_Resolution-1);
                         END IF;
                         
                         IF i = Calc_Steps-1 THEN
