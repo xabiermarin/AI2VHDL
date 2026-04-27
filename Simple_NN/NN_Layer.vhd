@@ -114,7 +114,7 @@ ARCHITECTURE BEHAVIORAL OF NN_Layer IS
     SIGNAL SUM_Wr_Ena   : STD_LOGIC := '1';                     -- Puerto de habilitar escritura
 
     -- RAM que almacena los valores de salida ya activados antes de enviarlos a la siguiente capa
-    CONSTANT OUT_RAM_Elements : NATURAL := min_val(Calc_Cycles, Output_Cycles);  -- Numero de entradas de la RAM (Mínimo entre Calc_Cycles y Output_Cycles para usar la menor memoria posible)
+    CONSTANT OUT_RAM_Elements : NATURAL := min_val(Calc_Cycles, Output_Cycles);  -- Número de entradas de la RAM (Mínimo entre Calc_Cycles y Output_Cycles para usar la menor memoria posible)
     type OUT_set_t is array (0 to Outputs/OUT_RAM_Elements-1) of SIGNED(NN_Value_Resolution-1 downto 0);    -- Array de valores de salida que se escriben juntos en un ciclo
     type OUT_ram_t is array (natural range <>) of OUT_set_t;    -- Array de OUT_set_t. Una entrada por cada ciclo de cálculo
     SIGNAL OUT_RAM      : OUT_ram_t(0 to OUT_RAM_Elements-1) := (others => (others => (others => '0')));
@@ -134,7 +134,7 @@ ARCHITECTURE BEHAVIORAL OF NN_Layer IS
     SIGNAL Out_Delay_Cnt     : NATURAL range 0 to Output_Delay-1 := Output_Delay-1;    -- Contador para retrasar los valores de salida que se envian uno tras otro
     SIGNAL Out_Ready         : STD_LOGIC;  -- Verdarero si los datos de salida se pueden leer de la RAM
 
-    SIGNAL iData_Reg         : NN_Values_T(Inputs/Input_Cycles-1 downto 0); -- Registra los datos de entrada un ciclo para que estén disponivles cuando se cargan los pesos de la ROM 
+    SIGNAL iData_Reg         : NN_Values_T(Inputs/Input_Cycles-1 downto 0); -- Registra los datos de entrada un ciclo para que estén disponibles cuando se cargan los pesos de la ROM 
 
     -- Constantes de agrupación de productos
     CONSTANT Group_Sum_Results    : NATURAL := INTEGER(ceil(REAL(Calc_Steps) / REAL(NN_Mult_Sum_Group))); -- Cuantos grupos de productos hay
@@ -163,7 +163,6 @@ BEGIN
     -- Proceso de escritura síncrona de la RAM de suma
     -- ===============================================
     -- Escribe en la RAM de suma cuando SUM_Wr_Ena está activo
-    -- La señal de habilitación permite controlar exactamente cuándo se escribe, evitando sobrescribir datos válidos con basura entre cálculos
     PROCESS (iStream)
     BEGIN
         IF (rising_edge(iStream.Data_CLK)) THEN
@@ -175,7 +174,6 @@ BEGIN
       
     SUM_Rd_Data <= SUM_RAM(SUM_Rd_Addr);  -- Lectura combinacional (asíncrona) de la  RAM
     
-    --Output RAM to save values after convolution and send them one by one to next convolution
     -- =================================================
     -- Proceso de escritura síncrona de la RAM de salida
     -- =================================================
@@ -190,11 +188,9 @@ BEGIN
     END PROCESS;
     
     OUT_Rd_Data <= OUT_RAM(OUT_Rd_Addr); -- Lectura combinacional (asíncrona) de la  RAM
-    
-    --Multiply input data with weights and create sum
-    
+       
     PROCESS (iStream)
-    -- Variables del proceso princiàñ    
+    -- Variables del proceso principal    
     
     -- Variables para seguimiento del cálculo actual
         VARIABLE Cycle_Reg     : NATURAL range 0 to Input_Cycles-1;                  -- Lleva la cuenta del ciclo de entrada actual
@@ -220,8 +216,8 @@ BEGIN
         VARIABLE sum : sum_set_t := (others => (others => '0'));            -- Suma acumulada actual (Se le van sumando productos cada ciclo)
         VARIABLE Sum_Reg    : sum_set_t := (others => (others => '0'));     -- Copia registrada en el momento de añadir el bias (Valor de sum al registrar útlima entrada)
         
-        VARIABLE Group_Sum_Counter  : NATURAL range 0 to Real_Group_Sum_Size := 0;  -- Cuenta cuántos productos se han acumulado en Prod_Sum_Buf dentro del grupo actual
-        VARIABLE Prod_Sum_Cntr      : NATURAL range 0 to Group_Sum_Results := 0;    --cuenta en qué grupo se está trabajando, para saber en qué posición de Prod_Buf guardar el resultado cuando el grupo esté completo
+        VARIABLE Group_Sum_Cnt  : NATURAL range 0 to Real_Group_Sum_Size := 0;  -- Cuenta cuántos productos se han acumulado en Prod_Sum_Buf dentro del grupo actual
+        VARIABLE Prod_Sum_Cnt      : NATURAL range 0 to Group_Sum_Results := 0;    --cuenta en qué grupo se está trabajando, para saber en qué posición de Prod_Buf guardar el resultado cuando el grupo esté completo
         VARIABLE Prod_Sum_Buf       : SIGNED(Group_Sum_Total_Bits-1 downto 0);      -- Acumulador temporal donde se van sumando los productos de un mismo grupo antes de guardarse en Prod_Buf
     
         BEGIN
@@ -241,20 +237,19 @@ BEGIN
 
             -- Añadir bias, aplicar función de activación y escribir en OUT RAM
             IF (Add_Bias) THEN
-                --Values for multiple outputs can be calculated
                 FOR o in 0 to Calc_Outputs-1 LOOP
                     -- Añadir el bias con el offset de los pesos
                     IF NN_Rounding(1) = '1' THEN
-                        Sum_Reg(o) := resize(shift_with_rounding(Sum_Reg(o), Sum_Offset_Bias) + to_signed(Bias_Const(o+Output_Bias_Reg*Calc_Outputs), bits_max+1),bits_max+1);
+                        Sum_Reg(o) := resize(shift_with_rounding(Sum_Reg(o), Sum_Offset_Bias) + to_signed(Bias_Const(o + Output_Bias_Reg * Calc_Outputs), bits_max+1),bits_max+1);
                     ELSE
-                        Sum_Reg(o) := resize(shift_bits(Sum_Reg(o), Sum_Offset_Bias) + to_signed(Bias_Const(o+Output_Bias_Reg*Calc_Outputs), bits_max+1),bits_max+1);
+                        Sum_Reg(o) := resize(shift_bits(Sum_Reg(o), Sum_Offset_Bias) + to_signed(Bias_Const(o + Output_Bias_Reg * Calc_Outputs), bits_max+1),bits_max+1);
                     END IF;
 
                     -- Ajustar el offset de salida
                     IF NN_Rounding(2) = '1' THEN
-                        Sum_Reg(o) := shift_with_rounding(Sum_Reg(o), Offset_Diff+Bias_Offset_Correction);
+                        Sum_Reg(o) := shift_with_rounding(Sum_Reg(o), Offset_Diff + Bias_Offset_Correction);
                     ELSE
-                        Sum_Reg(o) := shift_bits(Sum_Reg(o), Offset_Diff+Bias_Offset_Correction);
+                        Sum_Reg(o) := shift_bits(Sum_Reg(o), Offset_Diff + Bias_Offset_Correction);
                     END IF;
                     
                     -- Aplicar la función de activación
@@ -323,88 +318,88 @@ BEGIN
                     END LOOP;
                 END LOOP;
                 
-                --  Si es el último ciclo de entrada, congela la suma en Sum_Reg y activa Add_Bias para que el bloque anterior añada el bias en el siguiente ciclo
+                -- Si es el último ciclo de entrada, congela la suma en Sum_Reg y activa Add_Bias para que el bloque anterior añada el bias en el siguiente ciclo
                 IF (Cycle_Reg_2 = Input_Cycles-1) THEN
                     Sum_Reg  := sum;
                     Add_Bias <= true;
                 END IF;
                 
-                -- Si el calculo se divide en varios ciclos, guarda la suma parcial en la RAM
+                -- Si el cálculo se divide en varios ciclos, guarda la suma parcial en la RAM
                 IF (Calc_Cycles > 1) THEN
                     SUM_Wr_Data <= sum;
                 END IF;
                 
-                --Save current output to add the bias
+                -- Guardar el cálculo actual para sumarle el bias
                 Output_Bias_Reg  <= Output_Cnt_2;
             END IF;
             
-            --Calculate the neural net
+            -- Cálculo de las multiplicaciones (entrada X peso) de la red neuronal
             IF (Calc_En) THEN
                 
-                --Calculate the output values
+                -- Cálculo de los valores de salida
                 FOR o in 0 to Calc_Outputs-1 LOOP
-                    Group_Sum_Counter := 0;
-                    Prod_Sum_Cntr     := 0;
-                    Prod_Sum_Buf := (others => '0');
+                    Group_Sum_Cnt := 0;  -- Reset
+                    Prod_Sum_Cnt     := 0;  -- Reset
+                    Prod_Sum_Buf := (others => '0');  -- Reset
                     FOR i in 0 to Calc_Steps-1 LOOP
-                        IF NN_Shift_Before_Sum THEN
+                        IF NN_Shift_Before_Sum THEN     -- Con True lo desplaza inmediatamente para reducir bits, y lo acumula en Prod_Sum_Buf
                             IF NN_Rounding(0) = '1' THEN
-                                Prod_Sum_Buf := Prod_Sum_Buf + resize(shift_with_rounding(to_signed(iData_Reg(i) * Weights_Buf(o, i), NN_Value_Resolution+NN_Weight_Resolution-1), NN_Weight_Resolution-Offset-1-NN_Sum_Offset),bits_max+1);
-                            ELSE
-                                Prod_Sum_Buf := Prod_Sum_Buf + resize(shift_bits(to_signed(iData_Reg(i) * Weights_Buf(o, i), NN_Value_Resolution+NN_Weight_Resolution-1), NN_Weight_Resolution-Offset-1-NN_Sum_Offset),bits_max+1);
+                                Prod_Sum_Buf := Prod_Sum_Buf + resize(shift_with_rounding(to_signed(iData_Reg(i) * Weights_Buf(o, i), NN_Value_Resolution + NN_Weight_Resolution-1), NN_Weight_Resolution - Offset-1 - NN_Sum_Offset), bits_max+1);
+                            ELSE    -- Con False calcula el producto completo sin desplazar y lo acumula directamente 
+                                Prod_Sum_Buf := Prod_Sum_Buf + resize(shift_bits(to_signed(iData_Reg(i) * Weights_Buf(o, i), NN_Value_Resolution + NN_Weight_Resolution-1), NN_Weight_Resolution - Offset-1 - NN_Sum_Offset), bits_max+1);
                             END IF;
                         ELSE
-                            Prod_Sum_Buf := Prod_Sum_Buf + to_signed(iData_Reg(i) * Weights_Buf(o, i), NN_Value_Resolution+NN_Weight_Resolution-1);
+                            Prod_Sum_Buf := Prod_Sum_Buf + to_signed(iData_Reg(i) * Weights_Buf(o, i), NN_Value_Resolution + NN_Weight_Resolution-1);
                         END IF;
                         
-                        IF i = Calc_Steps-1 THEN
-                            Prod_Buf(o, Prod_Sum_Cntr) <= Prod_Sum_Buf;
-                        ELSIF Group_Sum_Counter < Real_Group_Sum_Size-1 THEN
-                            Group_Sum_Counter := Group_Sum_Counter + 1;
-                        ELSE
-                            Group_Sum_Counter := 0;
+                        IF i = Calc_Steps-1 THEN  -- Si es el último elemento se guarda la salida
+                            Prod_Buf(o, Prod_Sum_Cnt) <= Prod_Sum_Buf;
+                        ELSIF Group_Sum_Cnt < Real_Group_Sum_Size-1 THEN    -- Si el grupo no está lleno todavia, se sigue acumulando 
+                            Group_Sum_Cnt := Group_Sum_Cnt + 1;
+                        ELSE    -- Si el grupo está lleno, se guarada en Prod_Buf y empieza el siguiente
+                            Group_Sum_Cnt := 0;
                             
-                            Prod_Buf(o, Prod_Sum_Cntr) <= Prod_Sum_Buf;
+                            Prod_Buf(o, Prod_Sum_Cnt) <= Prod_Sum_Buf;
                             Prod_Sum_Buf := (others => '0');
                             
-                            Prod_Sum_Cntr := Prod_Sum_Cntr + 1;
+                            Prod_Sum_Cnt := Prod_Sum_Cnt + 1;
                         END IF;
                     END LOOP;
                 END LOOP;
                 
             END IF;
             
+            -- Actualizar versiones retrasadas de los contadores
             Cycle_Reg_2 := Cycle_Reg;
             Output_Cnt_2 := Output_Cnt;
             
-            --Keep track of the current calculation step while new data for calculation is available
+            -- Seguimiento de los pasos del cálculo mientras haya nuevos datos disponibles para el cálculo
             IF (iStream.Data_Valid = '1') THEN
-                Calc_En    <= true;     --Enable Calculation
-                iData_Reg  <= iData;    --Save data for calculation in next cycle (first has to load weight)
-                Output_Cnt := 0;
-
-                Cycle_Reg := iCycle;
+                Calc_En    <= true;     -- Activa el cálculo
+                iData_Reg  <= iData;    -- Guarda datos de entrada para el siguiente ciclo
+                Output_Cnt := 0;        -- Resetea contador de neuronas de salida
+                Cycle_Reg := iCycle;    -- Guarda ciclo de entrada actual
                 
-                --Count through all calculation steps
-                IF (iCycle = 0) THEN
+                -- Contar los pasos del cálculo
+                IF (iCycle = 0) THEN  -- Resetea el contador global al inicio de cada nueva muestra 
                     Element_Cnt := 0;
-                ELSIF(element_cnt < Calc_Cycles*Input_Cycles-1) THEN
+                ELSIF(element_cnt < Calc_Cycles*Input_Cycles-1) THEN -- Incrementa el contador global si no ha llegado al máximo
                     Element_Cnt := Element_Cnt + 1;
                 END IF;
-            ELSIF (Output_Cnt < Calc_Cycles-1 and element_cnt < Calc_Cycles*Input_Cycles-1) THEN
-            --Count through output values that are calculated
+            ELSIF (Output_Cnt < Calc_Cycles-1 and element_cnt < Calc_Cycles*Input_Cycles-1) THEN  --Cuando no hay datos válidos pero el cálculo no ha terminado
+            -- Avanza los contadores para procesar los grupos de neuronas restantes
                 Output_Cnt  := Output_Cnt + 1;
                 Element_Cnt := Element_Cnt + 1;
-            ELSE
-                Calc_En    <= false;
+            ELSE -- Cuando se han procesado todos los grupos 
+                Calc_En <= false; -- Se desactiva el cálculo
             END IF;
                 
-            --Load last sum for this filter from the RAM
+            -- Cargar el último valor calculado en la RAM
             SUM_Wr_Addr <= SUM_Rd_Addr;
             SUM_Rd_Addr <= SUM_Rd_Addr_Reg;
             SUM_Rd_Addr_Reg <= Output_Cnt;
                 
-            --Load Weights from ROM for this output and step of the calculation
+            -- Precarga la siguiente dirección de ROM
             IF (iStream.Data_Valid = '1' OR Calc_En) THEN
                 IF (Element_Cnt < Calc_Cycles*Input_Cycles-1) THEN
                     ROM_Addr <= Element_Cnt + 1;
@@ -412,40 +407,41 @@ BEGIN
                     ROM_Addr <= 0;
                 END IF;
             END IF;
-
+            
+            -- Indicador de que la salida de la capa está lista: 0 --> No listo | 1 --> Listo 
             Out_Ready <= '0';
                 
-            --Count through results of this neural network
-            IF (Last_Input = '1') THEN
-                Out_Cycle_Cnt := 0;
-                Out_Delay_Cnt <= 0;
-                Out_Ready     <= '1';
-            ELSIF (Out_Delay_Cnt < Output_Delay-1) THEN      --Add a delay between the output data
-                Out_Delay_Cnt <= Out_Delay_Cnt + 1;
-            ELSIF (Out_Cycle_Cnt_Reg < Output_Cycles-1) THEN --Count through Filters for the output
-                Out_Delay_Cnt <= 0;
-                Out_Cycle_Cnt := Out_Cycle_Cnt_Reg + 1;
-                Out_Ready     <= '1';
+            -- Count through results of this neural network
+            IF (Last_Input = '1') THEN  -- Cuando se preocesa la última salida
+                Out_Cycle_Cnt := 0;     -- Reset
+                Out_Delay_Cnt <= 0;     -- Reset
+                Out_Ready     <= '1';   -- Salida lista
+            ELSIF (Out_Delay_Cnt < Output_Delay-1) THEN      -- Sis igue en periodo retardo
+                Out_Delay_Cnt <= Out_Delay_Cnt + 1;     -- Avanza el retardo
+            ELSIF (Out_Cycle_Cnt_Reg < Output_Cycles-1) THEN -- Retardo completado pero quedan grupos de salida por enviar
+                Out_Delay_Cnt <= 0;     -- Reset
+                Out_Cycle_Cnt := Out_Cycle_Cnt_Reg + 1; -- Siguiente grupo de salida
+                Out_Ready     <= '1';  -- Siguiente salida lista
             END IF;
                 
-            --Read output value from RAM
-            Out_Cycle_Cnt_Reg  <= Out_Cycle_Cnt;
-            OUT_Rd_Addr        <= Out_Cycle_Cnt / (Output_Cycles/OUT_RAM_Elements);
+            -- Leer el valor de salida desde la RAM
+            Out_Cycle_Cnt_Reg  <= Out_Cycle_Cnt;  -- Registra Out_Cycle_Cnt para compensar la latencia de la RAM de salida
+            OUT_Rd_Addr        <= Out_Cycle_Cnt / (Output_Cycles/OUT_RAM_Elements);  -- Calcula la dirección de lectura 
                 
-            --If the output is calculated, read from RAM and set oStream
-            IF (Out_Delay_Cnt = 0) THEN
+            -- Si la salida se ha calculado, se lee la RAM y se establece oStream
+            IF (Out_Delay_Cnt = 0) THEN  -- Cuando no hay retardo activo lee los valores de la RAM de salida y los coloca en oData
                 FOR i in 0 to Out_Values-1 LOOP
-                    IF (Output_Cycles = OUT_RAM_Elements) THEN
-                        oData(i) <= to_integer(OUT_Rd_Data(i));
-                    ELSE
-                        oData(i) <= to_integer(OUT_Rd_Data(i+(Out_Cycle_Cnt_Reg mod (Output_Cycles/OUT_RAM_Elements))*Out_Values));
+                    IF (Output_Cycles = OUT_RAM_Elements) THEN 
+                        oData(i) <= to_integer(OUT_Rd_Data(i));  -- El índice es directo
+                    ELSE  
+                        oData(i) <= to_integer(OUT_Rd_Data(i+(Out_Cycle_Cnt_Reg mod (Output_Cycles/OUT_RAM_Elements))*Out_Values));  -- Calcula el offset correcto dentro de la entrada de RAM
                     END IF;
                 END LOOP;
                 
-                oCycle             <= Out_Cycle_Cnt_Reg;
-                oStream.Data_Valid <= Out_Ready;
+                oCycle             <= Out_Cycle_Cnt_Reg;  -- Indica qué ciclo de salida se está enviando
+                oStream.Data_Valid <= Out_Ready;          -- Propaga la señal de dato válido
             ELSE
-                oStream.Data_Valid <= '0';
+                oStream.Data_Valid <= '0';  -- Durante el retardo no hay datos válidos
             END IF;
         END IF;
     END PROCESS;
